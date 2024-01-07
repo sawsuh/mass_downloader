@@ -31,8 +31,8 @@ class SCDownloader(MassDownloader):
         while True:
             try:
                 self.spots_left.acquire()
-                self.chrdriver_stagerrer.acquire()
                 try:
+                    self.chrdriver_stagerrer.acquire()
                     chop = webdriver.ChromeOptions()
                     chop.page_load_strategy = 'eager'
                     prefs = {'download.default_directory' : self.dl_folder}
@@ -41,10 +41,10 @@ class SCDownloader(MassDownloader):
                     chop.add_argument("--headless=new")
 
                     driver = webdriver.Chrome(options = chop)
-                    self.chrdriver_stagerrer.release()
                 except Exception as e:
-                    self.chrdriver_stagerrer.release()
                     raise e
+                finally:
+                    self.chrdriver_stagerrer.release()
 
                 def click_fast(
                     xpath: str, 
@@ -79,10 +79,10 @@ class SCDownloader(MassDownloader):
                 print(f'{rem_sc(link)} downloaded (hopefully)')
 
                 driver.close()
-                self.spots_left.release()
                 return
             except Exception as e:
-                self.spots_left.release()
                 print(f'{rem_sc(link)} died because {e}')
                 time.sleep(0.1)
                 pass
+            finally:
+                self.spots_left.release()
