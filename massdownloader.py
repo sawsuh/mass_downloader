@@ -35,7 +35,7 @@ class MassDownloader(ABC):
         self.dl_folder = dl_folder
         self.n_threads = n_threads
         self.dl_wait_time = dl_wait_time
-        self.event_staggerer = EventStaggerer(wait_time=self.event_wait_time)
+        self.event_staggerer = EventStaggerer(wait_time=event_wait_time)
         self.spots_left = threading.Semaphore(n_threads)
 
     def clean_dls(self):
