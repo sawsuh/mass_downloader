@@ -9,18 +9,17 @@ class EventStaggerer:
     def __init__(self, wait_time: float):
         self.wait_time = wait_time
 
-        self.last_event_time = datetime.datetime.now()
+        self.next_event_time = datetime.datetime.now()
         self.checking_time = asyncio.Lock()
 
     async def block_until_event(self, message: str = 'event'):
-        while True:
-            async with self.checking_time:
-                t = datetime.datetime.now() 
-                if (t - self.last_event_time).total_seconds() > self.wait_time:
-                    self.last_event_time = t
-                    break
-                await asyncio.sleep(0.5)
-        print(f'{message} at {self.last_event_time}!')
+        #while True:
+        async with self.checking_time:
+            t = datetime.datetime.now() 
+            time_until_next_ev = (self.next_event_time - t).total_seconds()
+            self.next_event_time = max(t, self.next_event_time) + datetime.timedelta(seconds=self.wait_time)
+        await asyncio.sleep(time_until_next_ev)
+        print(f'{message} at {datetime.datetime.now()}!')
 
 class MassDownloader(ABC):
     def __init__(
@@ -29,7 +28,7 @@ class MassDownloader(ABC):
         dl_wait_time: float = 600,
         rm_dls: bool = False,
         dl_folder: str = '/home/prashant/sdler/dls/',
-        event_wait_time: float = 0.01
+        event_wait_time: float = 5
     ):
         self.rm_dls = rm_dls
         self.dl_folder = dl_folder
