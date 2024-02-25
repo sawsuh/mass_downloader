@@ -28,7 +28,7 @@ class MassDownloader(ABC):
         dl_wait_time: float = 600,
         rm_dls: bool = False,
         dl_folder: str = '/home/prashant/sdler/dls/',
-        event_wait_time: float = 5
+        event_wait_time: float = 0.01
     ):
         self.rm_dls = rm_dls
         self.dl_folder = dl_folder
