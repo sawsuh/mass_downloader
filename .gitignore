@@ -1,3 +1,2 @@
-__pycache__/massdownloader.cpython-312.pyc
-__pycache__/scdownloader.cpython-312.pyc
+*.pyc
 urls.txt
