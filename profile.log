@@ -1,0 +1,1189 @@
+SCRIPT  /usr/share/nvim/runtime/autoload/python.vim
+Sourced 1 time
+Total time:   0.000540
+ Self time:   0.000540
+
+count  total (s)   self (s)
+                            " Support for Python indenting, see runtime/indent/python.vim
+                            
+    1              0.000066 let s:keepcpo= &cpo
+    1              0.000034 set cpo&vim
+                            
+                            " need to inspect some old g:pyindent_* variables to be backward compatible
+    1              0.000090 let g:python_indent = extend(get(g:, 'python_indent', {}), #{
+                              \ closed_paren_align_last_line: v:true,
+                              \ open_paren: get(g:, 'pyindent_open_paren', 'shiftwidth() * 2'),
+                              \ nested_paren: get(g:, 'pyindent_nested_paren', 'shiftwidth()'),
+                              \ continue: get(g:, 'pyindent_continue', 'shiftwidth() * 2'),
+                              "\ searchpair() can be slow, limit the time to 150 msec or what is put in
+                              "\ g:python_indent.searchpair_timeout
+                              \ searchpair_timeout: get(g:, 'pyindent_searchpair_timeout', 150),
+                              "\ Identing inside parentheses can be very slow, regardless of the searchpair()
+                              "\ timeout, so let the user disable this feature if he doesn't need it
+                              \ disable_parentheses_indenting: get(g:, 'pyindent_disable_parentheses_indenting', v:false),
+                              \ }, 'keep')
+                            
+    1              0.000005 let s:maxoff = 50       " maximum number of lines to look backwards for ()
+                            
+    1              0.000012 function s:SearchBracket(fromlnum, flags)
+                              return searchpairpos('[[({]', '', '[])}]', a:flags,
+                                      \ {-> synstack('.', col('.'))
+                                      \ ->indexof({_, id -> synIDattr(id, 'name') =~ '\%(Comment\|Todo\|String\)$'}) >= 0},
+                                      \ [0, a:fromlnum - s:maxoff]->max(), g:python_indent.searchpair_timeout)
+                            endfunction
+                            
+                            " See if the specified line is already user-dedented from the expected value.
+    1              0.000005 function s:Dedented(lnum, expected)
+                              return indent(a:lnum) <= a:expected - shiftwidth()
+                            endfunction
+                            
+                            " Some other filetypes which embed Python have slightly different indent
+                            " rules (e.g. bitbake). Those filetypes can pass an extra funcref to this
+                            " function which is evaluated below.
+    1              0.000004 function python#GetIndent(lnum, ...)
+                              let ExtraFunc = a:0 > 0 ? a:1 : 0
+                            
+                              " If this line is explicitly joined: If the previous line was also joined,
+                              " line it up with that one, otherwise add two 'shiftwidth'
+                              if getline(a:lnum - 1) =~ '\\$'
+                                if a:lnum > 1 && getline(a:lnum - 2) =~ '\\$'
+                                  return indent(a:lnum - 1)
+                                endif
+                                return indent(a:lnum - 1) + get(g:, 'pyindent_continue', g:python_indent.continue)->eval()
+                              endif
+                            
+                              " If the start of the line is in a string don't change the indent.
+                              if has('syntax_items')
+                            	\ && synIDattr(synID(a:lnum, 1, 1), "name") =~ "String$"
+                                return -1
+                              endif
+                            
+                              " Search backwards for the previous non-empty line.
+                              let plnum = prevnonblank(v:lnum - 1)
+                            
+                              if plnum == 0
+                                " This is the first non-empty line, use zero indent.
+                                return 0
+                              endif
+                            
+                              if g:python_indent.disable_parentheses_indenting == 1
+                                let plindent = indent(plnum)
+                                let plnumstart = plnum
+                              else
+                                " Indent inside parens.
+                                " Align with the open paren unless it is at the end of the line.
+                                " E.g.
+                                "     open_paren_not_at_EOL(100,
+                                "                           (200,
+                                "                            300),
+                                "                           400)
+                                "     open_paren_at_EOL(
+                                "         100, 200, 300, 400)
+                                call cursor(a:lnum, 1)
+                                let [parlnum, parcol] = s:SearchBracket(a:lnum, 'nbW')
+                                if parlnum > 0
+                                  if parcol != col([parlnum, '$']) - 1
+                                    return parcol
+                                  elseif getline(a:lnum) =~ '^\s*[])}]' && !g:python_indent.closed_paren_align_last_line
+                                    return indent(parlnum)
+                                  endif
+                                endif
+                            
+                                call cursor(plnum, 1)
+                            
+                                " If the previous line is inside parenthesis, use the indent of the starting
+                                " line.
+                                let [parlnum, _] = s:SearchBracket(plnum, 'nbW')
+                                if parlnum > 0
+                                  if a:0 > 0 && ExtraFunc(parlnum)
+                                    " We may have found the opening brace of a bitbake Python task, e.g. 'python do_task {'
+                                    " If so, ignore it here - it will be handled later.
+                                    let parlnum = 0
+                                    let plindent = indent(plnum)
+                                    let plnumstart = plnum
+                                  else
+                                    let plindent = indent(parlnum)
+                                    let plnumstart = parlnum
+                                  endif
+                                else
+                                  let plindent = indent(plnum)
+                                  let plnumstart = plnum
+                                endif
+                            
+                                " When inside parenthesis: If at the first line below the parenthesis add
+                                " two 'shiftwidth', otherwise same as previous line.
+                                " i = (a
+                                "       + b
+                                "       + c)
+                                call cursor(a:lnum, 1)
+                                let [p, _] = s:SearchBracket(a:lnum, 'bW')
+                                if p > 0
+                                  if a:0 > 0 && ExtraFunc(p)
+                                    " Currently only used by bitbake
+                                    " Handle first non-empty line inside a bitbake Python task
+                                    if p == plnum
+                                      return shiftwidth()
+                                    endif
+                            
+                                    " Handle the user actually trying to close a bitbake Python task
+                                    let line = getline(a:lnum)
+                                    if line =~ '^\s*}'
+                                      return -2
+                                    endif
+                            
+                                    " Otherwise ignore the brace
+                                    let p = 0
+                                  else
+                                    if p == plnum
+                                      " When the start is inside parenthesis, only indent one 'shiftwidth'.
+                                      let [pp, _] = s:SearchBracket(a:lnum, 'bW')
+                                      if pp > 0
+                                        return indent(plnum)
+                                          \ + get(g:, 'pyindent_nested_paren', g:python_indent.nested_paren)->eval()
+                                      endif
+                                      return indent(plnum)
+                                        \ + get(g:, 'pyindent_open_paren', g:python_indent.open_paren)->eval()
+                                    endif
+                                    if plnumstart == p
+                                      return indent(plnum)
+                                    endif
+                                    return plindent
+                                  endif
+                                endif
+                              endif
+                            
+                            
+                              " Get the line and remove a trailing comment.
+                              " Use syntax highlighting attributes when possible.
+                              let pline = getline(plnum)
+                              let pline_len = strlen(pline)
+                              if has('syntax_items')
+                                " If the last character in the line is a comment, do a binary search for
+                                " the start of the comment.  synID() is slow, a linear search would take
+                                " too long on a long line.
+                                if synstack(plnum, pline_len)
+                                \ ->indexof({_, id -> synIDattr(id, 'name') =~ '\%(Comment\|Todo\)$'}) >= 0
+                                  let min = 1
+                                  let max = pline_len
+                                  while min < max
+                            	let col = (min + max) / 2
+                                    if synstack(plnum, col)
+                                    \ ->indexof({_, id -> synIDattr(id, 'name') =~ '\%(Comment\|Todo\)$'}) >= 0
+                            	  let max = col
+                            	else
+                            	  let min = col + 1
+                            	endif
+                                  endwhile
+                                  let pline = strpart(pline, 0, min - 1)
+                                endif
+                              else
+                                let col = 0
+                                while col < pline_len
+                                  if pline[col] == '#'
+                            	let pline = strpart(pline, 0, col)
+                            	break
+                                  endif
+                                  let col = col + 1
+                                endwhile
+                              endif
+                            
+                              " If the previous line ended with a colon, indent this line
+                              if pline =~ ':\s*$'
+                                return plindent + shiftwidth()
+                              endif
+                            
+                              " If the previous line was a stop-execution statement...
+                              if getline(plnum) =~ '^\s*\(break\|continue\|raise\|return\|pass\)\>'
+                                " See if the user has already dedented
+                                if s:Dedented(a:lnum, indent(plnum))
+                                  " If so, trust the user
+                                  return -1
+                                endif
+                                " If not, recommend one dedent
+                                return indent(plnum) - shiftwidth()
+                              endif
+                            
+                              " If the current line begins with a keyword that lines up with "try"
+                              if getline(a:lnum) =~ '^\s*\(except\|finally\)\>'
+                                let lnum = a:lnum - 1
+                                while lnum >= 1
+                                  if getline(lnum) =~ '^\s*\(try\|except\)\>'
+                            	let ind = indent(lnum)
+                            	if ind >= indent(a:lnum)
+                            	  return -1	" indent is already less than this
+                            	endif
+                            	return ind	" line up with previous try or except
+                                  endif
+                                  let lnum = lnum - 1
+                                endwhile
+                                return -1		" no matching "try"!
+                              endif
+                            
+                              " If the current line begins with a header keyword, dedent
+                              if getline(a:lnum) =~ '^\s*\(elif\|else\)\>'
+                            
+                                " Unless the previous line was a one-liner
+                                if getline(plnumstart) =~ '^\s*\(for\|if\|elif\|try\)\>'
+                                  return plindent
+                                endif
+                            
+                                " Or the user has already dedented
+                                if s:Dedented(a:lnum, plindent)
+                                  return -1
+                                endif
+                            
+                                return plindent - shiftwidth()
+                              endif
+                            
+                              " When after a () construct we probably want to go back to the start line.
+                              " a = (b
+                              "       + c)
+                              " here
+                              if parlnum > 0
+                                " ...unless the user has already dedented
+                                if s:Dedented(a:lnum, plindent)
+                                    return -1
+                                else
+                                    return plindent
+                                endif
+                              endif
+                            
+                              return -1
+                            endfunction
+                            
+    1              0.000031 let &cpo = s:keepcpo
+    1              0.000011 unlet s:keepcpo
+
+SCRIPT  /home/prashant/.vim/plugged/ultisnips/autoload/UltiSnips.vim
+Sourced 1 time
+Total time:   0.239607
+ Self time:   0.000259
+
+count  total (s)   self (s)
+    1              0.000017 if exists("b:did_autoload_ultisnips")
+                                finish
+    1              0.000002 endif
+    1              0.000007 let b:did_autoload_ultisnips = 1
+                            
+                            " Also import vim as we expect it to be imported in many places.
+    1   0.202932   0.000033 py3 import vim
+    1   0.036482   0.000034 py3 from UltiSnips import UltiSnips_Manager
+                            
+    1              0.000007 function! s:compensate_for_pum() abort
+                                """ The CursorMovedI event is not triggered while the popup-menu is visible,
+                                """ and it's by this event that UltiSnips updates its vim-state. The fix is
+                                """ to explicitly check for the presence of the popup menu, and update
+                                """ the vim-state accordingly.
+                                if pumvisible()
+                                    py3 UltiSnips_Manager._cursor_moved()
+                                endif
+                            endfunction
+                            
+    1              0.000002 function! s:is_floating(winId) abort
+                                if has('nvim')
+                                    return get(nvim_win_get_config(a:winId), 'relative', '') !=# ''
+                                endif
+                            
+                                return 0
+                            endfunction
+                            
+    1              0.000002 function! UltiSnips#Edit(bang, ...) abort
+                                if a:0 == 1 && a:1 != ''
+                                    let type = a:1
+                                else
+                                    let type = ""
+                                endif
+                                py3 vim.command("let file = '%s'" % UltiSnips_Manager._file_to_edit(vim.eval("type"), vim.eval('a:bang')))
+                            
+                                if !len(file)
+                                   return
+                                endif
+                            
+                                let mode = 'e'
+                                if exists('g:UltiSnipsEditSplit')
+                                    if g:UltiSnipsEditSplit == 'vertical'
+                                        let mode = 'vs'
+                                    elseif g:UltiSnipsEditSplit == 'horizontal'
+                                        let mode = 'sp'
+                                    elseif g:UltiSnipsEditSplit == 'tabdo'
+                                        let mode = 'tabedit'
+                                    elseif g:UltiSnipsEditSplit == 'context'
+                                        let mode = 'vs'
+                                        if winwidth(0) <= 2 * (&tw ? &tw : 80)
+                                            let mode = 'sp'
+                                        endif
+                                    endif
+                                endif
+                                exe ':'.mode.' '.escape(file, ' ')
+                            endfunction
+                            
+    1              0.000002 function! UltiSnips#AddFiletypes(filetypes) abort
+                                py3 UltiSnips_Manager.add_buffer_filetypes(vim.eval("a:filetypes"))
+                                return ""
+                            endfunction
+                            
+    1              0.000003 function! UltiSnips#FileTypeComplete(arglead, cmdline, cursorpos) abort
+                                let ret = {}
+                                let items = map(
+                                \   split(globpath(&runtimepath, 'syntax/*.vim'), '\n'),
+                                \   'fnamemodify(v:val, ":t:r")'
+                                \ )
+                                call insert(items, 'all')
+                                for item in items
+                                    if !has_key(ret, item) && item =~ '^'.a:arglead
+                                        let ret[item] = 1
+                                    endif
+                                endfor
+                            
+                                return sort(keys(ret))
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#ExpandSnippet() abort
+                                py3 UltiSnips_Manager.expand()
+                                return ""
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#ExpandSnippetOrJump() abort
+                                call s:compensate_for_pum()
+                                py3 UltiSnips_Manager.expand_or_jump()
+                                return ""
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#ListSnippets() abort
+                                py3 UltiSnips_Manager.list_snippets()
+                                return ""
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#SnippetsInCurrentScope(...) abort
+                                let g:current_ulti_dict = {}
+                                let all = get(a:, 1, 0)
+                                if all
+                                  let g:current_ulti_dict_info = {}
+                                endif
+                                py3 UltiSnips_Manager.snippets_in_current_scope(int(vim.eval("all")))
+                                return g:current_ulti_dict
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#CanExpandSnippet() abort
+                            	py3 vim.command("let can_expand = %d" % UltiSnips_Manager.can_expand())
+                            	return can_expand
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#CanJumpForwards() abort
+                            	py3 vim.command("let can_jump_forwards = %d" % UltiSnips_Manager.can_jump_forwards())
+                            	return can_jump_forwards
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#CanJumpBackwards() abort
+                            	py3 vim.command("let can_jump_backwards = %d" % UltiSnips_Manager.can_jump_backwards())
+                            	return can_jump_backwards
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#SaveLastVisualSelection() range abort
+                                py3 UltiSnips_Manager._save_last_visual_selection()
+                                return ""
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#JumpBackwards() abort
+                                call s:compensate_for_pum()
+                                py3 UltiSnips_Manager.jump_backwards()
+                                return ""
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#JumpForwards() abort
+                                call s:compensate_for_pum()
+                                py3 UltiSnips_Manager.jump_forwards()
+                                return ""
+                            endfunction
+                            
+    1              0.000003 function! UltiSnips#AddSnippetWithPriority(trigger, value, description, options, filetype, priority) abort
+                                py3 trigger = vim.eval("a:trigger")
+                                py3 value = vim.eval("a:value")
+                                py3 description = vim.eval("a:description")
+                                py3 options = vim.eval("a:options")
+                                py3 filetype = vim.eval("a:filetype")
+                                py3 priority = vim.eval("a:priority")
+                                py3 UltiSnips_Manager.add_snippet(trigger, value, description, options, filetype, priority)
+                                return ""
+                            endfunction
+                            
+    1              0.000002 function! UltiSnips#Anon(value, ...) abort
+                                " Takes the same arguments as SnippetManager.expand_anon:
+                                " (value, trigger="", description="", options="")
+                                py3 args = vim.eval("a:000")
+                                py3 value = vim.eval("a:value")
+                                py3 UltiSnips_Manager.expand_anon(value, *args)
+                                return ""
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#CursorMoved() abort
+                                py3 UltiSnips_Manager._cursor_moved()
+                            endf
+                            
+    1              0.000001 function! UltiSnips#LeavingBuffer() abort
+                                let from_preview = getwinvar(winnr('#'), '&previewwindow')
+                                let to_preview = getwinvar(winnr(), '&previewwindow')
+                                let from_floating = s:is_floating(win_getid('#'))
+                                let to_floating = s:is_floating(win_getid())
+                            
+                                if !(from_preview || to_preview || from_floating || to_floating)
+                                    py3 UltiSnips_Manager._leaving_buffer()
+                                endif
+                            endf
+                            
+    1              0.000001 function! UltiSnips#LeavingInsertMode() abort
+                                py3 UltiSnips_Manager._leaving_insert_mode()
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#TrackChange() abort
+                                py3 UltiSnips_Manager._track_change()
+                            endfunction
+                            
+    1              0.000001 function! UltiSnips#RefreshSnippets() abort
+                                py3 UltiSnips_Manager._refresh_snippets()
+                            endfunction
+                            " }}}
+
+SCRIPT  /usr/share/nvim/runtime/autoload/provider.vim
+Sourced 1 time
+Total time:   0.000074
+ Self time:   0.000074
+
+count  total (s)   self (s)
+                            " Common functions for providers
+                            
+                            " Start the provider and perform a 'poll' request
+                            "
+                            " Returns a valid channel on success
+    1              0.000014 function! provider#Poll(argv, orig_name, log_env, ...) abort
+                              let job = {'rpc': v:true, 'stderr_buffered': v:true}
+                              if a:0
+                                let job = extend(job, a:1)
+                              endif
+                              try
+                                let channel_id = jobstart(a:argv, job)
+                                if channel_id > 0 && rpcrequest(channel_id, 'poll') ==# 'ok'
+                                  return channel_id
+                                endif
+                              catch
+                                echomsg v:throwpoint
+                                echomsg v:exception
+                                for row in get(job, 'stderr', [])
+                                  echomsg row
+                                endfor
+                              endtry
+                              throw remote#host#LoadErrorForHost(a:orig_name, a:log_env)
+                            endfunction
+
+SCRIPT  /home/prashant/.vim/plugged/cmp-nvim-ultisnips/autoload/cmp_nvim_ultisnips.vim
+Sourced 1 time
+Total time:   0.000487
+ Self time:   0.000487
+
+count  total (s)   self (s)
+                            " TODO: move python code into separate files
+                            
+                            " Retrieves additional snippet information that is not directly accessible
+                            " using the UltiSnips API functions. Returns a list of tables (one table
+                            " per snippet) with the keys "trigger", "description", "options" and "value".
+                            "
+                            " If 'expandable_only' is "True", only expandable snippets are returned, otherwise all
+                            " snippets except regex and custom context snippets for the current filetype are returned.
+    1              0.000026 function! cmp_nvim_ultisnips#get_current_snippets(expandable_only)
+                            let g:_cmpu_current_snippets = []
+                            python3 << EOF
+                            import vim
+                            from UltiSnips import UltiSnips_Manager, vim_helper
+                            
+                            before = vim_helper.buf.line_till_cursor
+                            visual_content = UltiSnips_Manager._visual_content
+                            expandable_only = vim.eval("a:expandable_only") == "True"
+                            if expandable_only:
+                                snippets = UltiSnips_Manager._snips(before, True)
+                            else:
+                                snippets = UltiSnips_Manager._snips("", True)
+                            
+                            for snippet in snippets:
+                                is_context_snippet = snippet._context_code != None
+                                is_regex_snippet = "r" in snippet._opts
+                                # If show_snippets == "all", the snippets are cached so ignore "dynamic" snippets.
+                                if not expandable_only and (is_context_snippet or is_regex_snippet):
+                                  continue
+                                # For custom context snippets, always check if the context matches.
+                                if is_context_snippet and not snippet._context_match(visual_content, before):
+                                    continue
+                            
+                                vim.command(
+                                  "call add(g:_cmpu_current_snippets, {"
+                                  "'trigger': py3eval('snippet._trigger'),"
+                                  "'description': py3eval('snippet._description'),"
+                                  "'options': py3eval('snippet._opts'),"
+                                  "'value': py3eval('snippet._value'),"
+                                  "'matched': py3eval('snippet._matched'),"
+                                  "})"
+                                )
+                            EOF
+                            return g:_cmpu_current_snippets
+                            endfunction
+                            
+    1              0.000013 function cmp_nvim_ultisnips#set_filetype(filetype)
+                            python3 << EOF
+                            import vim
+                            from UltiSnips import vim_helper
+                            
+                            filetype = vim.eval("a:filetype")
+                            class CustomVimBuffer(vim_helper.VimBuffer):
+                              @property
+                              def filetypes(self):
+                                return [filetype]
+                            
+                            vim_helper._orig_buf = vim_helper.buf
+                            vim_helper.buf = CustomVimBuffer()  # TODO: avoid creating a new class instance every time
+                            EOF
+                            endfunction
+                            
+    1              0.000008 function! cmp_nvim_ultisnips#reset_filetype()
+                            python3 << EOF
+                            from UltiSnips import vim_helper
+                            
+                            # Restore to original VimBuffer instance
+                            vim_helper.buf = vim_helper._orig_buf
+                            EOF
+                            endfunction
+                            
+    1              0.000008 function! cmp_nvim_ultisnips#setup_treesitter_autocmds()
+                              augroup cmp_nvim_ultisnips
+                                autocmd!
+                                autocmd TextChangedI,TextChangedP * lua require("cmp_nvim_ultisnips.treesitter").set_filetype()
+                                autocmd InsertLeave * lua require("cmp_nvim_ultisnips.treesitter").reset_filetype()
+                              augroup end
+                            endfunction
+                            
+                            " Define silent mappings
+                            
+                            " More info on why CursorMoved is called can be found here:
+                            " https://github.com/SirVer/ultisnips/issues/1295#issuecomment-774056584
+    1              0.000059 imap <silent> <Plug>(cmpu-expand)
+                            \ <C-r>=[UltiSnips#CursorMoved(), UltiSnips#ExpandSnippet()][1]<cr>
+                            
+    1              0.000037 smap <silent> <Plug>(cmpu-expand)
+                            \ <Esc>:call UltiSnips#ExpandSnippetOrJump()<cr>
+                            
+    1              0.000029 imap <silent> <Plug>(cmpu-jump-forwards)
+                            \ <C-r>=UltiSnips#JumpForwards()<cr>
+                            
+    1              0.000026 smap <silent> <Plug>(cmpu-jump-forwards)
+                            \ <Esc>:call UltiSnips#JumpForwards()<cr>
+                            
+    1              0.000036 imap <silent> <Plug>(cmpu-jump-backwards)
+                            \ <C-r>=UltiSnips#JumpBackwards()<cr>
+                            
+    1              0.000039 smap <silent> <Plug>(cmpu-jump-backwards)
+                            \ <Esc>:call UltiSnips#JumpBackwards()<cr>
+
+FUNCTION  cmp_nvim_ultisnips#get_current_snippets()
+    Defined: ~/.vim/plugged/cmp-nvim-ultisnips/autoload/cmp_nvim_ultisnips.vim:9
+Called 30 times
+Total time:  12.099996
+ Self time:  12.099996
+
+count  total (s)   self (s)
+   30              0.005798 let g:_cmpu_current_snippets = []
+   30              0.000135 python3 << EOF
+                            import vim
+                            from UltiSnips import UltiSnips_Manager, vim_helper
+                            
+                            before = vim_helper.buf.line_till_cursor
+                            visual_content = UltiSnips_Manager._visual_content
+                            expandable_only = vim.eval("a:expandable_only") == "True"
+                            if expandable_only:
+                                snippets = UltiSnips_Manager._snips(before, True)
+                            else:
+                                snippets = UltiSnips_Manager._snips("", True)
+                            
+                            for snippet in snippets:
+                                is_context_snippet = snippet._context_code != None
+                                is_regex_snippet = "r" in snippet._opts
+                                # If show_snippets == "all", the snippets are cached so ignore "dynamic" snippets.
+                                if not expandable_only and (is_context_snippet or is_regex_snippet):
+                                  continue
+                                # For custom context snippets, always check if the context matches.
+                                if is_context_snippet and not snippet._context_match(visual_content, before):
+                                    continue
+                            
+                                vim.command(
+                                  "call add(g:_cmpu_current_snippets, {"
+                                  "'trigger': py3eval('snippet._trigger'),"
+                                  "'description': py3eval('snippet._description'),"
+                                  "'options': py3eval('snippet._opts'),"
+                                  "'value': py3eval('snippet._value'),"
+                                  "'matched': py3eval('snippet._matched'),"
+                                  "})"
+                                )
+                            EOF
+   30              0.000194 return g:_cmpu_current_snippets
+
+FUNCTION  remote#host#Require()
+    Defined: /usr/share/nvim/runtime/autoload/remote/host.vim:33
+Called 1 time
+Total time:   0.201759
+ Self time:   0.000103
+
+count  total (s)   self (s)
+    1              0.000008   if !has_key(s:hosts, a:name)
+                                throw 'No host named "'.a:name.'" is registered'
+    1              0.000001   endif
+    1              0.000005   let host = s:hosts[a:name]
+    1              0.000005   if !host.channel && !host.initialized
+    1              0.000015     let host_info = { 'name': a:name, 'orig_name': get(host, 'orig_name', a:name) }
+    1   0.201707   0.000051     let host.channel = call(host.factory, [host_info])
+    1              0.000003     let host.initialized = 1
+    1              0.000001   endif
+    1              0.000004   return host.channel
+
+FUNCTION  <SNR>54_Dedented()
+    Defined: /usr/share/nvim/runtime/autoload/python.vim:30
+Called 5 times
+Total time:   0.000051
+ Self time:   0.000051
+
+count  total (s)   self (s)
+    5              0.000043   return indent(a:lnum) <= a:expected - shiftwidth()
+
+FUNCTION  <SNR>27_Highlight_Matching_Pair()
+    Defined: /usr/share/nvim/runtime/plugin/matchparen.vim:39
+Called 87 times
+Total time:   0.032563
+ Self time:   0.030292
+
+count  total (s)   self (s)
+                              " Remove any previous match.
+   87   0.003492   0.001310   call s:Remove_Matches()
+                            
+                              " Avoid that we remove the popup menu.
+                              " Return when there are no colors (looks like the cursor jumps).
+   87              0.000766   if pumvisible() || (&t_Co < 8 && !has("gui_running"))
+                                return
+   87              0.000086   endif
+                            
+                              " Get the character under the cursor and check if it's in 'matchpairs'.
+   87              0.000618   let c_lnum = line('.')
+   87              0.000428   let c_col = col('.')
+   87              0.000187   let before = 0
+                            
+   87              0.000491   let text = getline(c_lnum)
+   87              0.002983   let matches = matchlist(text, '\(.\)\=\%'.c_col.'c\(.\=\)')
+   87              0.000394   if empty(matches)
+                                let [c_before, c] = ['', '']
+   87              0.000118   else
+   87              0.000766     let [c_before, c] = matches[1:2]
+   87              0.000099   endif
+   87              0.002046   let plist = split(&matchpairs, '.\zs[:,]')
+   87              0.000525   let i = index(plist, c)
+   87              0.000205   if i < 0
+                                " not found, in Insert mode try character before the cursor
+   87              0.000619     if c_col > 1 && (mode() == 'i' || mode() == 'R')
+   80              0.000429       let before = strlen(c_before)
+   80              0.000199       let c = c_before
+   80              0.000322       let i = index(plist, c)
+   87              0.000094     endif
+   87              0.000159     if i < 0
+                                  " not found, nothing to do
+   81              0.000167       return
+    6              0.000006     endif
+    6              0.000005   endif
+                            
+                              " Figure out the arguments for searchpairpos().
+    6              0.000013   if i % 2 == 0
+    2              0.000005     let s_flags = 'nW'
+    2              0.000008     let c2 = plist[i + 1]
+    4              0.000004   else
+    4              0.000010     let s_flags = 'nbW'
+    4              0.000010     let c2 = c
+    4              0.000015     let c = plist[i - 1]
+    6              0.000005   endif
+    6              0.000014   if c == '['
+                                let c = '\['
+                                let c2 = '\]'
+    6              0.000006   endif
+                            
+                              " Find the match.  When it was just before the cursor move it there for a
+                              " moment.
+    6              0.000014   if before > 0
+    6              0.000049     let has_getcurpos = exists("*getcurpos")
+    6              0.000016     if has_getcurpos
+                                  " getcurpos() is more efficient but doesn't exist before 7.4.313.
+    6              0.000038       let save_cursor = getcurpos()
+                                else
+                                  let save_cursor = winsaveview()
+    6              0.000006     endif
+    6              0.000044     call cursor(c_lnum, c_col - before)
+    6              0.000006   endif
+                            
+    6              0.000066   if !has("syntax") || !exists("g:syntax_on")
+                                let s_skip = "0"
+    6              0.000006   else
+                                " Build an expression that detects whether the current cursor position is
+                                " in certain syntax types (string, comment, etc.), for use as
+                                " searchpairpos()'s skip argument.
+                                " We match "escape" for special items, such as lispEscapeSpecial, and
+                                " match "symbol" for lispBarSymbol.
+    6              0.000060     let s_skip = 'synstack(".", col("."))' . '->indexof({_, id -> synIDattr(id, "name") =~? ' . '"string\\|character\\|singlequote\\|escape\\|symbol\\|comment"}) >= 0'
+                                " If executing the expression determines that the cursor is currently in
+                                " one of the syntax types, then we want searchpairpos() to find the pair
+                                " within those syntax types (i.e., not skip).  Otherwise, the cursor is
+                                " outside of the syntax types and s_skip should keep its value so we skip
+                                " any matching pair inside the syntax types.
+                                " Catch if this throws E363: pattern uses more memory than 'maxmempattern'.
+    6              0.000010     try
+    6              0.000590       execute 'if ' . s_skip . ' | let s_skip = "0" | endif'
+                                catch /^Vim\%((\a\+)\)\=:E363/
+                                  " We won't find anything, so skip searching, should keep Vim responsive.
+                                  return
+    6              0.000009     endtry
+    6              0.000006   endif
+                            
+                              " Limit the search to lines visible in the window.
+    6              0.000046   let stoplinebottom = line('w$')
+    6              0.000024   let stoplinetop = line('w0')
+    6              0.000015   if i % 2 == 0
+    2              0.000006     let stopline = stoplinebottom
+    4              0.000004   else
+    4              0.000011     let stopline = stoplinetop
+    6              0.000005   endif
+                            
+                              " Limit the search time to 300 msec to avoid a hang on very long lines.
+                              " This fails when a timeout is not supported.
+    6              0.000027   if mode() == 'i' || mode() == 'R'
+    6              0.000057     let timeout = exists("b:matchparen_insert_timeout") ? b:matchparen_insert_timeout : g:matchparen_insert_timeout
+                              else
+                                let timeout = exists("b:matchparen_timeout") ? b:matchparen_timeout : g:matchparen_timeout
+    6              0.000005   endif
+    6              0.000009   try
+    6   0.013300   0.013211     let [m_lnum, m_col] = searchpairpos(c, '', c2, s_flags, s_skip, stopline, timeout)
+                              catch /E118/
+                                " Can't use the timeout, restrict the stopline a bit more to avoid taking
+                                " a long time on closed folds and long lines.
+                                " The "viewable" variables give a range in which we can scroll while
+                                " keeping the cursor at the same position.
+                                " adjustedScrolloff accounts for very large numbers of scrolloff.
+                                let adjustedScrolloff = min([&scrolloff, (line('w$') - line('w0')) / 2])
+                                let bottom_viewable = min([line('$'), c_lnum + &lines - adjustedScrolloff - 2])
+                                let top_viewable = max([1, c_lnum-&lines+adjustedScrolloff + 2])
+                                " one of these stoplines will be adjusted below, but the current values are
+                                " minimal boundaries within the current window
+                                if i % 2 == 0
+                                  if has("byte_offset") && has("syntax_items") && &smc > 0
+                            	let stopbyte = min([line2byte("$"), line2byte(".") + col(".") + &smc * 2])
+                            	let stopline = min([bottom_viewable, byte2line(stopbyte)])
+                                  else
+                            	let stopline = min([bottom_viewable, c_lnum + 100])
+                                  endif
+                                  let stoplinebottom = stopline
+                                else
+                                  if has("byte_offset") && has("syntax_items") && &smc > 0
+                            	let stopbyte = max([1, line2byte(".") + col(".") - &smc * 2])
+                            	let stopline = max([top_viewable, byte2line(stopbyte)])
+                                  else
+                            	let stopline = max([top_viewable, c_lnum - 100])
+                                  endif
+                                  let stoplinetop = stopline
+                                endif
+                                let [m_lnum, m_col] = searchpairpos(c, '', c2, s_flags, s_skip, stopline)
+    6              0.000009   endtry
+                            
+    6              0.000013   if before > 0
+    6              0.000024     if has_getcurpos
+    6              0.000046       call setpos('.', save_cursor)
+                                else
+                                  call winrestview(save_cursor)
+    6              0.000005     endif
+    6              0.000005   endif
+                            
+                              " If a match is found setup match highlighting.
+    6              0.000027   if m_lnum > 0 && m_lnum >= stoplinetop && m_lnum <= stoplinebottom 
+    4              0.000018     if exists('*matchaddpos')
+    4              0.000063       call matchaddpos('MatchParen', [[c_lnum, c_col - before], [m_lnum, m_col]], 10, 3)
+                                else
+                                  exe '3match MatchParen /\(\%' . c_lnum . 'l\%' . (c_col - before) . 'c\)\|\(\%' . m_lnum . 'l\%' . m_col . 'c\)/'
+    4              0.000003     endif
+    4              0.000013     let w:paren_hl_on = 1
+    6              0.000005   endif
+
+FUNCTION  provider#Poll()
+    Defined: /usr/share/nvim/runtime/autoload/provider.vim:6
+Called 1 time
+Total time:   0.201047
+ Self time:   0.201047
+
+count  total (s)   self (s)
+    1              0.000013   let job = {'rpc': v:true, 'stderr_buffered': v:true}
+    1              0.000003   if a:0
+    1              0.000015     let job = extend(job, a:1)
+    1              0.000002   endif
+    1              0.000002   try
+    1              0.004131     let channel_id = jobstart(a:argv, job)
+    1              0.196833     if channel_id > 0 && rpcrequest(channel_id, 'poll') ==# 'ok'
+    1              0.000011       return channel_id
+                                endif
+                              catch
+                                echomsg v:throwpoint
+                                echomsg v:exception
+                                for row in get(job, 'stderr', [])
+                                  echomsg row
+                                endfor
+    1              0.000004   endtry
+                              throw remote#host#LoadErrorForHost(a:orig_name, a:log_env)
+
+FUNCTION  remote#host#PluginsForHost()
+    Defined: /usr/share/nvim/runtime/autoload/remote/host.vim:177
+Called 1 time
+Total time:   0.000027
+ Self time:   0.000027
+
+count  total (s)   self (s)
+    1              0.000015   if !has_key(s:plugins_for_host, a:host)
+                                let s:plugins_for_host[a:host] = []
+    1              0.000002   end
+    1              0.000005   return s:plugins_for_host[a:host]
+
+FUNCTION  UltiSnips#TrackChange()
+    Defined: ~/.vim/plugged/ultisnips/autoload/UltiSnips.vim:176
+Called 84 times
+Total time:   0.341709
+ Self time:   0.341709
+
+count  total (s)   self (s)
+   84              0.341550     py3 UltiSnips_Manager._track_change()
+
+FUNCTION  provider#python3#Prog()
+    Defined: /usr/share/nvim/runtime/autoload/provider/python3.vim:13
+Called 1 time
+Total time:   0.000006
+ Self time:   0.000006
+
+count  total (s)   self (s)
+    1              0.000004   return s:prog
+
+FUNCTION  provider#pythonx#Require()
+    Defined: /usr/share/nvim/runtime/autoload/provider/pythonx.vim:8
+Called 1 time
+Total time:   0.201656
+ Self time:   0.000487
+
+count  total (s)   self (s)
+                              " Python host arguments
+    1   0.000021   0.000016   let prog = provider#python3#Prog()
+    1              0.000037   let args = [prog, '-c', 'import sys; sys.path = [p for p in sys.path if p != ""]; import neovim; neovim.start_host()']
+                            
+                            
+                              " Collect registered Python plugins into args
+    1   0.000061   0.000034   let python_plugins = remote#host#PluginsForHost(a:host.name)
+    2              0.000010   for plugin in python_plugins
+    1              0.000010     call add(args, plugin.path)
+    2              0.000005   endfor
+                            
+    1   0.201495   0.000359   return provider#Poll(args, a:host.orig_name, '$NVIM_PYTHON_LOG_FILE', {'overlapped': v:true})
+
+FUNCTION  UltiSnips#ExpandSnippet()
+    Defined: ~/.vim/plugged/ultisnips/autoload/UltiSnips.vim:79
+Called 1 time
+Total time:   0.026361
+ Self time:   0.026361
+
+count  total (s)   self (s)
+    1              0.026357     py3 UltiSnips_Manager.expand()
+    1              0.000002     return ""
+
+FUNCTION  python#GetIndent()
+    Defined: /usr/share/nvim/runtime/autoload/python.vim:37
+Called 6 times
+Total time:   0.025173
+ Self time:   0.004650
+
+count  total (s)   self (s)
+    6              0.000110   let ExtraFunc = a:0 > 0 ? a:1 : 0
+                            
+                              " If this line is explicitly joined: If the previous line was also joined,
+                              " line it up with that one, otherwise add two 'shiftwidth'
+    6              0.000105   if getline(a:lnum - 1) =~ '\\$'
+                                if a:lnum > 1 && getline(a:lnum - 2) =~ '\\$'
+                                  return indent(a:lnum - 1)
+                                endif
+                                return indent(a:lnum - 1) + get(g:, 'pyindent_continue', g:python_indent.continue)->eval()
+    6              0.000006   endif
+                            
+                              " If the start of the line is in a string don't change the indent.
+    6              0.000225   if has('syntax_items') && synIDattr(synID(a:lnum, 1, 1), "name") =~ "String$"
+                                return -1
+    6              0.000006   endif
+                            
+                              " Search backwards for the previous non-empty line.
+    6              0.000042   let plnum = prevnonblank(v:lnum - 1)
+                            
+    6              0.000014   if plnum == 0
+                                " This is the first non-empty line, use zero indent.
+                                return 0
+    6              0.000005   endif
+                            
+    6              0.000028   if g:python_indent.disable_parentheses_indenting == 1
+                                let plindent = indent(plnum)
+                                let plnumstart = plnum
+    6              0.000007   else
+                                " Indent inside parens.
+                                " Align with the open paren unless it is at the end of the line.
+                                " E.g.
+                                "     open_paren_not_at_EOL(100,
+                                "                           (200,
+                                "                            300),
+                                "                           400)
+                                "     open_paren_at_EOL(
+                                "         100, 200, 300, 400)
+    6              0.000043     call cursor(a:lnum, 1)
+    6   0.008238   0.000138     let [parlnum, parcol] = s:SearchBracket(a:lnum, 'nbW')
+    6              0.000033     if parlnum > 0
+                                  if parcol != col([parlnum, '$']) - 1
+                                    return parcol
+                                  elseif getline(a:lnum) =~ '^\s*[])}]' && !g:python_indent.closed_paren_align_last_line
+                                    return indent(parlnum)
+                                  endif
+    6              0.000007     endif
+                            
+    6              0.000043     call cursor(plnum, 1)
+                            
+                                " If the previous line is inside parenthesis, use the indent of the starting
+                                " line.
+    6   0.004621   0.000143     let [parlnum, _] = s:SearchBracket(plnum, 'nbW')
+    6              0.000028     if parlnum > 0
+                                  if a:0 > 0 && ExtraFunc(parlnum)
+                                    " We may have found the opening brace of a bitbake Python task, e.g. 'python do_task {'
+                                    " If so, ignore it here - it will be handled later.
+                                    let parlnum = 0
+                                    let plindent = indent(plnum)
+                                    let plnumstart = plnum
+                                  else
+                                    let plindent = indent(parlnum)
+                                    let plnumstart = parlnum
+                                  endif
+    6              0.000007     else
+    6              0.000034       let plindent = indent(plnum)
+    6              0.000016       let plnumstart = plnum
+    6              0.000006     endif
+                            
+                                " When inside parenthesis: If at the first line below the parenthesis add
+                                " two 'shiftwidth', otherwise same as previous line.
+                                " i = (a
+                                "       + b
+                                "       + c)
+    6              0.000038     call cursor(a:lnum, 1)
+    6   0.007995   0.000127     let [p, _] = s:SearchBracket(a:lnum, 'bW')
+    6              0.000035     if p > 0
+                                  if a:0 > 0 && ExtraFunc(p)
+                                    " Currently only used by bitbake
+                                    " Handle first non-empty line inside a bitbake Python task
+                                    if p == plnum
+                                      return shiftwidth()
+                                    endif
+                            
+                                    " Handle the user actually trying to close a bitbake Python task
+                                    let line = getline(a:lnum)
+                                    if line =~ '^\s*}'
+                                      return -2
+                                    endif
+                            
+                                    " Otherwise ignore the brace
+                                    let p = 0
+                                  else
+                                    if p == plnum
+                                      " When the start is inside parenthesis, only indent one 'shiftwidth'.
+                                      let [pp, _] = s:SearchBracket(a:lnum, 'bW')
+                                      if pp > 0
+                                        return indent(plnum) + get(g:, 'pyindent_nested_paren', g:python_indent.nested_paren)->eval()
+                                      endif
+                                      return indent(plnum) + get(g:, 'pyindent_open_paren', g:python_indent.open_paren)->eval()
+                                    endif
+                                    if plnumstart == p
+                                      return indent(plnum)
+                                    endif
+                                    return plindent
+                                  endif
+    6              0.000007     endif
+    6              0.000008   endif
+                            
+                            
+                              " Get the line and remove a trailing comment.
+                              " Use syntax highlighting attributes when possible.
+    6              0.000039   let pline = getline(plnum)
+    6              0.000033   let pline_len = strlen(pline)
+    6              0.000060   if has('syntax_items')
+                                " If the last character in the line is a comment, do a binary search for
+                                " the start of the comment.  synID() is slow, a linear search would take
+                                " too long on a long line.
+    6   0.001197   0.001172     if synstack(plnum, pline_len) ->indexof({_, id -> synIDattr(id, 'name') =~ '\%(Comment\|Todo\)$'}) >= 0
+                                  let min = 1
+                                  let max = pline_len
+                                  while min < max
+                            	let col = (min + max) / 2
+                                    if synstack(plnum, col) ->indexof({_, id -> synIDattr(id, 'name') =~ '\%(Comment\|Todo\)$'}) >= 0
+                            	  let max = col
+                            	else
+                            	  let min = col + 1
+                            	endif
+                                  endwhile
+                                  let pline = strpart(pline, 0, min - 1)
+    6              0.000007     endif
+                              else
+                                let col = 0
+                                while col < pline_len
+                                  if pline[col] == '#'
+                            	let pline = strpart(pline, 0, col)
+                            	break
+                                  endif
+                                  let col = col + 1
+                                endwhile
+    6              0.000008   endif
+                            
+                              " If the previous line ended with a colon, indent this line
+    6              0.000101   if pline =~ ':\s*$'
+    1              0.000009     return plindent + shiftwidth()
+    5              0.000004   endif
+                            
+                              " If the previous line was a stop-execution statement...
+    5              0.000118   if getline(plnum) =~ '^\s*\(break\|continue\|raise\|return\|pass\)\>'
+                                " See if the user has already dedented
+    5   0.000168   0.000117     if s:Dedented(a:lnum, indent(plnum))
+                                  " If so, trust the user
+    4              0.000009       return -1
+    1              0.000001     endif
+                                " If not, recommend one dedent
+    1              0.000006     return indent(plnum) - shiftwidth()
+                              endif
+                            
+                              " If the current line begins with a keyword that lines up with "try"
+                              if getline(a:lnum) =~ '^\s*\(except\|finally\)\>'
+                                let lnum = a:lnum - 1
+                                while lnum >= 1
+                                  if getline(lnum) =~ '^\s*\(try\|except\)\>'
+                            	let ind = indent(lnum)
+                            	if ind >= indent(a:lnum)
+                            	  return -1	" indent is already less than this
+                            	endif
+                            	return ind	" line up with previous try or except
+                                  endif
+                                  let lnum = lnum - 1
+                                endwhile
+                                return -1		" no matching "try"!
+                              endif
+                            
+                              " If the current line begins with a header keyword, dedent
+                              if getline(a:lnum) =~ '^\s*\(elif\|else\)\>'
+                            
+                                " Unless the previous line was a one-liner
+                                if getline(plnumstart) =~ '^\s*\(for\|if\|elif\|try\)\>'
+                                  return plindent
+                                endif
+                            
+                                " Or the user has already dedented
+                                if s:Dedented(a:lnum, plindent)
+                                  return -1
+                                endif
+                            
+                                return plindent - shiftwidth()
+                              endif
+                            
+                              " When after a () construct we probably want to go back to the start line.
+                              " a = (b
+                              "       + c)
+                              " here
+                              if parlnum > 0
+                                " ...unless the user has already dedented
+                                if s:Dedented(a:lnum, plindent)
+                                    return -1
+                                else
+                                    return plindent
+                                endif
+                              endif
+                            
+                              return -1
+
+FUNCTION  <SNR>27_Remove_Matches()
+    Defined: /usr/share/nvim/runtime/plugin/matchparen.vim:197
+Called 87 times
+Total time:   0.002182
+ Self time:   0.002182
+
+count  total (s)   self (s)
+   87              0.000994   if exists('w:paren_hl_on') && w:paren_hl_on
+    4              0.000023     silent! call matchdelete(3)
+    4              0.000014     let w:paren_hl_on = 0
+   87              0.000194   endif
+
+FUNCTION  provider#python3#Call()
+    Defined: /usr/share/nvim/runtime/autoload/provider/python3.vim:26
+Called 22017 times
+Total time:  21.715750
+ Self time:  21.513992
+
+count  total (s)   self (s)
+22017              0.159825   if s:err != ''
+                                return
+22017              0.032957   endif
+22017              0.112081   if !exists('s:host')
+    1              0.000013     let s:rpcrequest = function('rpcrequest')
+                            
+                                " Ensure that we can load the Python3 host before bootstrapping
+    1              0.000003     try
+    1   0.201786   0.000027       let s:host = remote#host#Require('legacy-python3-provider')
+                                catch
+                                  let s:err = v:exception
+                                  echohl WarningMsg
+                                  echomsg v:exception
+                                  echohl None
+                                  return
+    1              0.000001     endtry
+22017              0.022599   endif
+22017              9.842401   return call(s:rpcrequest, insert(insert(a:args, 'python_'.a:method), s:host))
+
+FUNCTION  <SNR>54_SearchBracket()
+    Defined: /usr/share/nvim/runtime/autoload/python.vim:22
+Called 18 times
+Total time:   0.020447
+ Self time:   0.005420
+
+count  total (s)   self (s)
+   18   0.020408   0.005382   return searchpairpos('[[({]', '', '[])}]', a:flags, {-> synstack('.', col('.')) ->indexof({_, id -> synIDattr(id, 'name') =~ '\%(Comment\|Todo\|String\)$'}) >= 0}, [0, a:fromlnum - s:maxoff]->max(), g:python_indent.searchpair_timeout)
+
+FUNCTIONS SORTED ON TOTAL TIME
+count  total (s)   self (s)  function
+22017  21.715750  21.513992  provider#python3#Call()
+   30  12.099996             cmp_nvim_ultisnips#get_current_snippets()
+   84   0.341709             UltiSnips#TrackChange()
+    1   0.201759   0.000103  remote#host#Require()
+    1   0.201656   0.000487  provider#pythonx#Require()
+    1   0.201047             provider#Poll()
+   87   0.032563   0.030292  <SNR>27_Highlight_Matching_Pair()
+    1   0.026361             UltiSnips#ExpandSnippet()
+    6   0.025173   0.004650  python#GetIndent()
+   18   0.020447   0.005420  <SNR>54_SearchBracket()
+   87   0.002182             <SNR>27_Remove_Matches()
+    5   0.000051             <SNR>54_Dedented()
+    1   0.000027             remote#host#PluginsForHost()
+    1   0.000006             provider#python3#Prog()
+
+FUNCTIONS SORTED ON SELF TIME
+count  total (s)   self (s)  function
+22017  21.715750  21.513992  provider#python3#Call()
+   30             12.099996  cmp_nvim_ultisnips#get_current_snippets()
+   84              0.341709  UltiSnips#TrackChange()
+    1              0.201047  provider#Poll()
+   87   0.032563   0.030292  <SNR>27_Highlight_Matching_Pair()
+    1              0.026361  UltiSnips#ExpandSnippet()
+   18   0.020447   0.005420  <SNR>54_SearchBracket()
+    6   0.025173   0.004650  python#GetIndent()
+   87              0.002182  <SNR>27_Remove_Matches()
+    1   0.201656   0.000487  provider#pythonx#Require()
+    1   0.201759   0.000103  remote#host#Require()
+    5              0.000051  <SNR>54_Dedented()
+    1              0.000027  remote#host#PluginsForHost()
+    1              0.000006  provider#python3#Prog()
+
