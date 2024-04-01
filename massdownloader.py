@@ -55,7 +55,9 @@ class MassDownloader(ABC):
                     print(f"Failed to delete {file_path}. Reason: {e}")
 
     def load_urls(self, urls: str):
-        self.targets = (url for url in urls.split("\n") if len(url) > 0)
+        self.targets = (
+            url for url in urls.split("\n") if len(url) > 0 and url[0] != "#"
+        )
 
     @abstractmethod
     async def dl_target(self, driver: BrowserContext, link: str):
