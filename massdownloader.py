@@ -175,7 +175,7 @@ class ChromiumDownloader(MassDownloader):
                 return
 
             except Exception as e:
-                print(f"{rem_sc(link)} died because {e}")
+                print(f"{rem_spot(link)} died because {e}")
                 await asyncio.sleep(3)
             finally:
                 self.spots_left.release()
