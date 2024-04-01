@@ -136,13 +136,13 @@ class ChromiumDownloader(MassDownloader):
                 await self.spots_left.acquire()
                 page = await driver.new_page()
 
-                async def get_button_helper(xpath, message):
+                async def get_button(xpath, message):
                     return await self.get_button(page, xpath, message)
 
                 await page.goto("https://spotifymate.com/en")
 
                 input_xpath = '//*[@id="url"]'
-                input_box = await get_button_helper(
+                input_box = await get_button(
                     input_xpath, message=f"typing url in {rem_spot(link)}"
                 )
                 await self.click_button(input_box)
@@ -150,7 +150,7 @@ class ChromiumDownloader(MassDownloader):
 
                 dl_xpath = "/html/body/main/div[1]/div/div/div/div/form/button/span"
                 await self.click_button(
-                    await get_button_helper(
+                    await get_button(
                         dl_xpath, message=f"clicking get dl for {rem_spot(link)}"
                     )
                 )
@@ -159,7 +159,7 @@ class ChromiumDownloader(MassDownloader):
                 async with page.expect_download() as download_info:
                     print(f"DOWNLOADING {rem_spot(link)}")
                     await self.click_button(
-                        await get_button_helper(
+                        await get_button(
                             file_xpath,
                             message=f"clicking download for {rem_spot(link)}",
                         )
@@ -184,9 +184,8 @@ class ChromiumDownloader(MassDownloader):
                 await self.spots_left.acquire()
                 page = await driver.new_page()
 
-                get_button = lambda xpath, message: self.get_button(
-                    page, xpath, message
-                )
+                async def get_button(xpath, message):
+                    return await self.get_button(page, xpath, message)
 
                 await page.goto("https://soundcloudmp3.org/")
 
